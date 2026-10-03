@@ -23,6 +23,24 @@ import org.springframework.security.web.authentication.UsernamePasswordAuthentic
 @EnableWebSecurity
 public class SecurityFilterConfig {
 
+    /*
+     * SecurityFilterChain defines how Spring Security should process
+     * incoming HTTP requests.
+     *
+     * The flow is:
+     *
+     * Request
+     *    ↓
+     * JwtFilter
+     *    ↓
+     * JWT validation
+     *    ↓
+     * SecurityContext
+     *    ↓
+     * Authorization rules
+     *    ↓
+     * Controller
+     */
     @Bean
     public SecurityFilterChain securityFilterChain(
             HttpSecurity httpSecurity,
@@ -30,120 +48,294 @@ public class SecurityFilterConfig {
             CustomUserService customUserService,
             AuthenticationEntryPoint authenticationEntryPoint) {
 
-        // Create our custom JWT filter.
-        // This filter extracts the JWT from the Authorization header,
-        // validates the token, and sets the authenticated user
-        // in Spring Security's SecurityContext.
+        /*
+         * Create our custom JWT filter.
+         *
+         * JwtFilter reads the JWT from the Authorization header,
+         * validates it, extracts the user's email, loads the user,
+         * and places the authenticated user inside the SecurityContext.
+         */
         JwtFilter jwtAuthenticationFilter =
                 new JwtFilter(jwtService, customUserService);
 
+
         return httpSecurity
 
-                // Disable CSRF because this application uses JWT-based
-                // stateless authentication instead of server-side sessions.
+                /*
+                 * Disable CSRF protection because this application is
+                 * using stateless JWT authentication.
+                 *
+                 * With JWT authentication, the server does not maintain
+                 * a login session for the user. Each request carries
+                 * authentication information through the JWT.
+                 */
                 .csrf(csrf -> csrf.disable())
 
-                // Define authorization rules for different endpoints.
+
+                /*
+                 * Define authorization rules for application endpoints.
+                 *
+                 * Authentication and authorization are different:
+                 *
+                 * Authentication:
+                 * "Who are you?"
+                 *
+                 * Authorization:
+                 * "What are you allowed to access?"
+                 */
                 .authorizeHttpRequests(
                         request -> request
 
-                                // These endpoints are public.
-                                // Authentication is not required for registration and login.
+                                /*
+                                 * Registration and login are public
+                                 * endpoints.
+                                 *
+                                 * A user does not have a JWT yet when
+                                 * registering or logging in, so these
+                                 * endpoints must be accessible without
+                                 * authentication.
+                                 */
                                 .requestMatchers(
                                         "/users/register",
                                         "/users/login"
                                 ).permitAll()
 
-                                // The logged-in user can access their own profile.
-                                // A valid JWT must be present.
+
+                                /*
+                                 * /users/me is accessible only to an
+                                 * authenticated user.
+                                 *
+                                 * The JwtFilter must successfully validate
+                                 * the JWT and place authentication information
+                                 * into the SecurityContext.
+                                 */
                                 .requestMatchers("/users/me")
                                 .authenticated()
 
-                                // Only users with the ADMIN role can access
-                                // these user-management endpoints.
+
+                                /*
+                                 * These are user-management endpoints.
+                                 *
+                                 * Only users having the ADMIN role are
+                                 * allowed to access them.
+                                 *
+                                 * hasRole("ADMIN") internally expects the
+                                 * authority:
+                                 *
+                                 * ROLE_ADMIN
+                                 */
                                 .requestMatchers(
                                         "/users",
                                         "/users/{id}"
                                 ).hasRole("ADMIN")
 
-                                // Any other endpoint requires authentication.
+
+                                /*
+                                 * Any endpoint not explicitly defined above
+                                 * requires authentication.
+                                 *
+                                 * Therefore, by default, the application
+                                 * does not allow anonymous access.
+                                 */
                                 .anyRequest().authenticated()
                 )
 
-                // Make the application stateless.
-                // Spring Security will NOT maintain authentication using
-                // an HTTP session. Each request must carry its JWT.
+
+                /*
+                 * Configure the application as stateless.
+                 *
+                 * STATELESS means Spring Security will not create or use
+                 * an HTTP session to remember authentication.
+                 *
+                 * Therefore, every protected request must provide a valid
+                 * JWT.
+                 *
+                 * Example:
+                 *
+                 * Request 1 → Bearer JWT
+                 * Request 2 → Bearer JWT
+                 * Request 3 → Bearer JWT
+                 */
                 .sessionManagement(session ->
                         session.sessionCreationPolicy(
                                 SessionCreationPolicy.STATELESS
                         )
                 )
 
-                // If authentication fails or the request does not contain
-                // a valid authentication, use our custom 401 response.
+
+                /*
+                 * Configure what should happen when authentication fails.
+                 *
+                 * For example, if a user requests a protected endpoint
+                 * without a valid JWT, Spring Security invokes the
+                 * AuthenticationEntryPoint.
+                 *
+                 * Our custom AuthenticationEntryPoint returns HTTP 401
+                 * with a JSON response.
+                 */
                 .exceptionHandling(ex ->
                         ex.authenticationEntryPoint(authenticationEntryPoint)
                 )
 
-                // Add our JwtFilter before Spring Security's
-                // UsernamePasswordAuthenticationFilter.
-                //
-                // This allows our application to validate the JWT
-                // and authenticate the user before authorization rules
-                // are applied.
+
+                /*
+                 * Register our JwtFilter before Spring Security's
+                 * UsernamePasswordAuthenticationFilter.
+                 *
+                 * This is important because we want our JWT authentication
+                 * to happen before Spring Security checks authorization.
+                 *
+                 * The flow becomes:
+                 *
+                 * Request
+                 *    ↓
+                 * JwtFilter
+                 *    ↓
+                 * JWT validated
+                 *    ↓
+                 * SecurityContext populated
+                 *    ↓
+                 * Authorization rules
+                 */
                 .addFilterBefore(
                         jwtAuthenticationFilter,
                         UsernamePasswordAuthenticationFilter.class
                 )
 
-                // Build and return the Spring Security filter chain.
+
+                /*
+                 * Build the complete Spring Security filter chain.
+                 */
                 .build();
     }
 
 
+    /*
+     * PasswordEncoder is responsible for hashing passwords.
+     *
+     * BCrypt is a one-way password hashing algorithm.
+     *
+     * The application should never store the user's plain-text password
+     * in the database.
+     *
+     * Example:
+     *
+     * Password entered:
+     * Prince@123
+     *
+     * Database:
+     * $2a$10$......
+     */
     @Bean
     public PasswordEncoder passwordEncoder() {
-
-        // BCrypt is used to securely hash passwords.
-        // We never store the user's plain-text password in the database.
         return new BCryptPasswordEncoder();
     }
 
 
+    /*
+     * AuthenticationManager is responsible for performing
+     * username/password authentication.
+     *
+     * In this application, the AuthenticationManager uses
+     * DaoAuthenticationProvider.
+     *
+     * The flow during login is:
+     *
+     * Login request
+     *      ↓
+     * AuthenticationManager
+     *      ↓
+     * DaoAuthenticationProvider
+     *      ↓
+     * CustomUserService
+     *      ↓
+     * Database
+     *      ↓
+     * BCrypt password comparison
+     *      ↓
+     * Authentication successful/failed
+     */
     @Bean
     public AuthenticationManager authenticationManager(
             CustomUserService customUserService,
             PasswordEncoder passwordEncoder) {
 
-        // DaoAuthenticationProvider performs username/password
-        // authentication using UserDetailsService.
+
+        /*
+         * DaoAuthenticationProvider connects Spring Security's
+         * username/password authentication mechanism with our
+         * UserDetailsService.
+         *
+         * CustomUserService loads the user from the database.
+         */
         DaoAuthenticationProvider daoAuthenticationProvider =
                 new DaoAuthenticationProvider(customUserService);
 
-        // Tell Spring Security to use BCrypt when comparing
-        // the entered password with the password stored in the database.
+
+        /*
+         * Tell the authentication provider to use BCrypt when comparing
+         * the password entered by the user with the hashed password
+         * stored in the database.
+         *
+         * BCrypt does not decrypt the stored password.
+         * Instead, it hashes the entered password and compares the result.
+         */
         daoAuthenticationProvider.setPasswordEncoder(passwordEncoder);
 
-        // ProviderManager delegates authentication to the configured
-        // AuthenticationProvider.
+
+        /*
+         * ProviderManager is an implementation of AuthenticationManager.
+         *
+         * It delegates the authentication request to the configured
+         * AuthenticationProvider.
+         */
         return new ProviderManager(daoAuthenticationProvider);
     }
 
 
+    /*
+     * AuthenticationEntryPoint handles authentication failures.
+     *
+     * It is used when a user tries to access a protected resource
+     * without valid authentication.
+     *
+     * Example:
+     *
+     * GET /users/me
+     *
+     * Authorization header is missing or JWT is invalid.
+     *
+     * Spring Security calls this AuthenticationEntryPoint.
+     */
     @Bean
     public AuthenticationEntryPoint authenticationEntryPoint() {
 
-        // AuthenticationEntryPoint is called when a user tries to access
-        // a protected endpoint without valid authentication.
         return (request, response, authException) -> {
 
-            // Return HTTP 401 Unauthorized.
+
+            /*
+             * Return HTTP 401 Unauthorized.
+             *
+             * 401 means the request does not contain valid authentication
+             * credentials.
+             */
             response.setStatus(HttpStatus.UNAUTHORIZED.value());
 
-            // Tell the client that the response body is JSON.
-            response.setContentType(MediaType.APPLICATION_JSON_VALUE);
 
-            // Return a custom JSON error response.
+            /*
+             * Tell the client that the response body is JSON.
+             */
+            response.setContentType(
+                    MediaType.APPLICATION_JSON_VALUE
+            );
+
+
+            /*
+             * Send a custom JSON error response to the client.
+             *
+             * This prevents Spring Security from returning an unwanted
+             * default HTML error page.
+             */
             response.getWriter().write(
                     "{\"Status\":401," +
                             "\"error\":\"Unauthorized\"," +

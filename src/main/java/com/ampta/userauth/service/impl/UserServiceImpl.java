@@ -82,11 +82,10 @@ public class UserServiceImpl implements UserService {
 
 
 
-
     @Override
     public UserResponse updateUser(Long id, UserRequest request) {
 
-        if(!userRepository.existsByUsername(request.getUsername())){
+        if(userRepository.existsByUsername(request.getUsername())){
             throw new IllegalArgumentException("Username already exists: " + request.getEmail());
         }
 
